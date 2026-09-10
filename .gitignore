@@ -1,0 +1,25 @@
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+
+# Настройки IDE (PyCharm, VS Code)
+.idea/
+.vscode/
+
+# Папка модели Vosk (весит много, пользователи качают сами)
+model/
+vosk-model-*/
+
+# Пользовательские данные и скриншоты
+Screenshots/
+commands.json
+
+# Сборка PyInstaller
+build/
+dist/
+*.spec
