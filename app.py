@@ -24,7 +24,7 @@ from vosk import KaldiRecognizer, Model
 
 pyautogui.FAILSAFE = False
 
-# --- ПУТИ К ФАЙЛАМ ---
+# --- ПУТИ К ФАЙЛАМ ДЛЯ РЕЖИМА --onefile ---
 if getattr(sys, 'frozen', False):
     EXE_DIR = os.path.dirname(sys.executable)
     INTERNAL_DIR = getattr(sys, '_MEIPASS', EXE_DIR)
@@ -42,8 +42,27 @@ STOP_AUDIO_EVENT = threading.Event()
 AUDIO_THREAD = None
 VOICE_THREAD = None
 
+# --- КОДЫ МЕДИА-КЛАВИШ WINDOWS ---
+VK_MEDIA_NEXT_TRACK = 0xB0
+VK_MEDIA_PREV_TRACK = 0xB1
+VK_MEDIA_STOP = 0xB2
+VK_MEDIA_PLAY_PAUSE = 0xB3
+VK_VOLUME_MUTE = 0xAD
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP = 0xAF
 
-# --- БЕЗОПАСНЫЙ ПУТЬ ДЛЯ WINDOWS ---
+
+def press_media_key(vk_code: int, repeat: int = 1):
+    """Посылает системные нажатия мультимедийных клавиш (не сбивает фокус с окон/игр)."""
+    for _ in range(repeat):
+        ctypes.windll.user32.keybd_event(vk_code, 0, 0, 0)
+        time.sleep(0.04)
+        ctypes.windll.user32.keybd_event(vk_code, 0, 2, 0)
+        time.sleep(0.03)
+    play_sound("success")
+
+
+# --- БЕЗОПАСНЫЙ ПУТЬ ДЛЯ WINDOWS (C++ VOSK) ---
 def get_safe_win_path(path: str) -> str:
     if sys.platform != "win32":
         return path
@@ -84,21 +103,20 @@ def find_valid_model_dir() -> str | None:
     return None
 
 
-# --- ЗВУКОВЫЕ СИГНАЛЫ ---
+# --- ЗВУКОВЫЕ СИГНАЛЫ (МЯГКИЕ И ПРИГЛУШЕННЫЕ) ---
 def play_sound(sound_type="wake"):
     def _play():
         try:
             if sound_type == "wake":
-                winsound.Beep(750, 75)
+                winsound.Beep(750, 70)
             elif sound_type == "success":
-                winsound.Beep(800, 50)
+                winsound.Beep(800, 45)
                 time.sleep(0.04)
-                winsound.Beep(1000, 60)
+                winsound.Beep(1000, 55)
             elif sound_type == "blocked":
-                # Глухой нисходящий сигнал (блокировка/отмена)
-                winsound.Beep(450, 100)
+                winsound.Beep(450, 90)
                 time.sleep(0.03)
-                winsound.Beep(350, 120)
+                winsound.Beep(350, 110)
         except Exception:
             pass
 
@@ -173,9 +191,8 @@ def save_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-# --- ПРОВЕРКА ЗАПУЩЕННЫХ ИГР ---
+# --- ПРОВЕРКА ИГРЫ В ПРОЦЕССАХ ---
 def is_game_running(cfg: dict) -> tuple[bool, str]:
-    """Проверяет, запущен ли хоть один процесс, помеченный как игра."""
     game_processes = set()
     for item in cfg.get("commands", []):
         if item.get("is_game", False):
@@ -191,9 +208,8 @@ def is_game_running(cfg: dict) -> tuple[bool, str]:
             name = (p.info['name'] or '').lower()
             if name in game_processes:
                 return True, name
-    except Exception as e:
-        print(f"[Ошибка сканирования процессов]: {e}")
-
+    except Exception:
+        pass
     return False, ""
 
 
@@ -217,7 +233,7 @@ def execute_plan(steps: list):
         for idx, step_target in enumerate(steps):
             if not step_target:
                 continue
-            print(f"[План] Выполнение шага {idx + 1}: {step_target}")
+            print(f"[План] Шаг {idx + 1}: {step_target}")
             execute_target(step_target, play_snd=False)
             if idx < len(steps) - 1:
                 time.sleep(1.2)
@@ -226,67 +242,142 @@ def execute_plan(steps: list):
     threading.Thread(target=_run, daemon=True).start()
 
 
-# --- ОТПРАВКА В DISCORD С ЗАЩИТОЙ ОТ АЛЬТ-ТАБА В ИГРЕ ---
+# --- ОТПРАВКА В DISCORD ---
 def send_discord_message(discord_tag: str, text: str, cfg: dict):
     def _send():
-        # 1. ПРОВЕРКА: активна ли игра
         game_active, game_name = is_game_running(cfg)
         if game_active:
-            print(f"\n[ОТМЕНА] Обнаружена запущенная игра: {game_name}!")
-            print("[Вася] Сообщение отменено, чтобы не сворачивать игру.")
+            print(f"[Блокировка] Игра {game_name} активна, отправка отменена!")
             play_sound("blocked")
             if GUI_APP:
                 GUI_APP.set_status("blocked")
             return
 
-        # 2. Поиск окна Discord
         try:
             windows = [w for w in gw.getAllWindows() if 'discord' in w.title.lower()]
             if not windows:
-                print("[Discord] Окно Discord не найдено.")
+                # Поднимаем из трея через протокол
+                webbrowser.open("discord://")
+                time.sleep(0.8)
+                windows = [w for w in gw.getAllWindows() if 'discord' in w.title.lower()]
+
+            if not windows:
+                print("[Discord] Окно не найдено. Запустите Discord.")
                 play_sound("blocked")
                 return
 
             win = windows[0]
-            if win.isMinimized:
+            try:
                 win.restore()
+            except Exception:
+                pass
             win.activate()
-            time.sleep(0.12)
+            time.sleep(0.35)
 
             pyautogui.hotkey('ctrl', 'k')
-            time.sleep(0.12)
+            time.sleep(0.35)
 
             pyperclip.copy(discord_tag)
             pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.15)
+            time.sleep(0.3)
             pyautogui.press('enter')
-            time.sleep(0.15)
+            time.sleep(0.3)
 
             pyperclip.copy(text)
             pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.08)
+            time.sleep(0.15)
             pyautogui.press('enter')
 
             play_sound("success")
-            print(f"[Discord] Успешно отправлено {discord_tag}: {text}")
+            print(f"[Discord] Отправлено для {discord_tag}: {text}")
         except Exception as e:
-            print(f"[Ошибка Discord автоматизации]: {e}")
+            print(f"[Ошибка Discord]: {e}")
             play_sound("blocked")
 
     threading.Thread(target=_send, daemon=True).start()
 
 
-# --- АНАЛИЗАТОР ГОЛОСА ---
+# --- ОБРАБОТКА МУЗЫКАЛЬНЫХ КОМАНД ---
+def handle_music_commands(phrase: str) -> bool:
+    clean = phrase.lower().strip()
+
+    # 1. Пауза / Стоп
+    stop_triggers = [
+        "музыка стоп", "стоп музыка", "музыка пауза", "останови музыку",
+        "пауза", "паузу", "выключи музыку", "музыку на паузу"
+    ]
+    if any(st in clean for st in stop_triggers):
+        print("[Музыка] Пауза / Стоп")
+        press_media_key(VK_MEDIA_PLAY_PAUSE)
+        return True
+
+    # 2. Включить / Играть
+    play_triggers = [
+        "музыка включить", "включи музыку", "музыка играть", "играть музыку",
+        "продолжи музыку", "продолжить музыку", "возобнови музыку", "музыка старт"
+    ]
+    if any(pt in clean for pt in play_triggers):
+        print("[Музыка] Воспроизведение")
+        press_media_key(VK_MEDIA_PLAY_PAUSE)
+        return True
+
+    # 3. Следующий трек
+    next_triggers = [
+        "музыка следующее", "музыка следующая", "следующий трек", "следующая песня",
+        "трек дальше", "музыка дальше", "переключи трек", "переключи песню",
+        "следующий", "следующая", "песню дальше"
+    ]
+    if any(nt in clean for nt in next_triggers):
+        print("[Музыка] Следующий трек")
+        press_media_key(VK_MEDIA_NEXT_TRACK)
+        return True
+
+    # 4. Предыдущий трек
+    prev_triggers = [
+        "музыка предыдущее", "музыка предыдущая", "предыдущий трек", "предыдущая песня",
+        "трек назад", "музыка назад", "прошлый трек", "прошлая песня",
+        "верни трек", "предыдущий", "предыдущая", "песню назад"
+    ]
+    if any(pr in clean for pr in prev_triggers):
+        print("[Музыка] Предыдущий трек")
+        press_media_key(VK_MEDIA_PREV_TRACK)
+        return True
+
+    # 5. Громкость
+    if any(v in clean for v in ["музыка громче", "звук громче", "сделай громче", "прибавь звук"]):
+        print("[Музыка] Громче")
+        press_media_key(VK_VOLUME_UP, repeat=4)
+        return True
+
+    if any(v in clean for v in ["музыка тише", "звук тише", "сделай тише", "убавь звук"]):
+        print("[Музыка] Тише")
+        press_media_key(VK_VOLUME_DOWN, repeat=4)
+        return True
+
+    if any(v in clean for v in ["музыка без звука", "выключи звук", "звук мут", "заглуши музыку"]):
+        print("[Музыка] Без звука")
+        press_media_key(VK_VOLUME_MUTE)
+        return True
+
+    return False
+
+
+# --- АНАЛИЗАТОР ВСЕХ ГОЛОСОВЫХ КОМАНД ---
 def check_and_execute(phrase: str, cfg: dict) -> bool:
     clean = phrase.lower().strip()
     words = clean.split()
     if not words:
         return False
 
+    # 1. Скриншот
     if any(sc in clean for sc in ["скриншот", "скрин"]):
         return take_screenshot()
 
-    # Отправка сообщений
+    # 2. Мультимедиа и Музыка
+    if handle_music_commands(clean):
+        return True
+
+    # 3. Сообщения в Discord
     msg_triggers = ["напиши", "отправь", "скинь", "передай", "сообщи"]
     for i, w in enumerate(words):
         if w in msg_triggers and i + 1 < len(words):
@@ -298,17 +389,16 @@ def check_and_execute(phrase: str, cfg: dict) -> bool:
                         if message_body:
                             send_discord_message(contact["discord_tag"], message_body, cfg)
                             return True
-                        else:
-                            return False
+                        return False
 
-    # Планы
+    # 4. Мульти-планы
     for plan in cfg.get("plans", []):
         for alias in plan.get("aliases", []):
             if alias in clean or any(fuzz.ratio(w, alias) >= 82 for w in words):
                 execute_plan(plan.get("steps", []))
                 return True
 
-    # Одиночные команды
+    # 5. Одиночные команды
     for item in cfg.get("commands", []):
         target = item["target"]
         for alias in item.get("aliases", []):
@@ -324,7 +414,7 @@ def audio_capture_worker(device_idx):
         device_info = sd.query_devices(device_idx, 'input')
         samplerate = int(device_info['default_samplerate'])
     except Exception as e:
-        print(f"[Ошибка устройства #{device_idx}]: {e}")
+        print(f"[Ошибка микрофона #{device_idx}]: {e}")
         if GUI_APP:
             GUI_APP.set_status("error_mic")
         return
@@ -367,7 +457,7 @@ def voice_recognizer_worker():
     try:
         model = Model(model_dir)
     except Exception as e:
-        print(f"[Сбой модели Vosk]: {e}")
+        print(f"[Сбой Vosk]: {e}")
         if GUI_APP:
             GUI_APP.set_status("error_model")
         return
@@ -457,7 +547,7 @@ class AssistantApp(ctk.CTk):
         super().__init__()
 
         self.title("Голосовой ассистент «Вася»")
-        self.geometry("790x760")
+        self.geometry("810x770")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
 
@@ -497,14 +587,16 @@ class AssistantApp(ctk.CTk):
         self.tab_cmds = self.tabview.add("⚡ Команды")
         self.tab_plans = self.tabview.add("📋 Планы")
         self.tab_ds = self.tabview.add("💬 Discord")
+        self.tab_music = self.tabview.add("🎵 Музыка")
         self.tab_settings = self.tabview.add("⚙️ Настройки")
 
         self._build_commands_tab()
         self._build_plans_tab()
         self._build_discord_tab()
+        self._build_music_tab()
         self._build_settings_tab()
 
-    # --- ВКЛАДКА 1: КОМАНДЫ (С МЕТКОЙ ИГРЫ) ---
+    # --- ВКЛАДКА 1: КОМАНДЫ ---
     def _build_commands_tab(self):
         add_frame = ctk.CTkFrame(self.tab_cmds)
         add_frame.pack(fill="x", padx=10, pady=10)
@@ -525,7 +617,6 @@ class AssistantApp(ctk.CTk):
         browse_btn = ctk.CTkButton(p_row, text="Обзор", width=80, command=self._browse_command_target)
         browse_btn.pack(side="right")
 
-        # Настройки игры и процесса
         game_options_row = ctk.CTkFrame(add_frame, fg_color="transparent")
         game_options_row.grid(row=4, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
 
@@ -561,15 +652,13 @@ class AssistantApp(ctk.CTk):
             norm_path = os.path.normpath(f)
             self.cmd_target_entry.delete(0, "end")
             self.cmd_target_entry.insert(0, norm_path)
-
-            # Автоматически заполняем имя процесса
             base_name = os.path.basename(norm_path).lower()
             if base_name.endswith(".exe"):
                 self.cmd_proc_entry.delete(0, "end")
                 self.cmd_proc_entry.insert(0, base_name)
                 self.is_game_checkbox.select()
 
-    # --- ВКЛАДКА 2: МУЛЬТИ-ПЛАНЫ ---
+    # --- ВКЛАДКА 2: ПЛАНЫ ---
     def _build_plans_tab(self):
         p_frame = ctk.CTkFrame(self.tab_plans)
         p_frame.pack(fill="x", padx=10, pady=10)
@@ -583,7 +672,6 @@ class AssistantApp(ctk.CTk):
         self.plan_aliases_entry = ctk.CTkEntry(p_frame, placeholder_text="дискорд, запусти дискорд, дс")
         self.plan_aliases_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 8))
 
-        # Шаг 1
         ctk.CTkLabel(p_frame, text="Шаг 1 (например, .bat Запрета):").grid(row=4, column=0, sticky="w", padx=10,
                                                                            pady=(0, 2))
         s1_row = ctk.CTkFrame(p_frame, fg_color="transparent")
@@ -593,9 +681,7 @@ class AssistantApp(ctk.CTk):
         ctk.CTkButton(s1_row, text="Обзор", width=80, command=lambda: self._browse_into(self.plan_step1_entry)).pack(
             side="right")
 
-        # Шаг 2
-        ctk.CTkLabel(p_frame, text="Шаг 2 (например, Discord или игра):").grid(row=6, column=0, sticky="w", padx=10,
-                                                                               pady=(0, 2))
+        ctk.CTkLabel(p_frame, text="Шаг 2 (например, Discord):").grid(row=6, column=0, sticky="w", padx=10, pady=(0, 2))
         s2_row = ctk.CTkFrame(p_frame, fg_color="transparent")
         s2_row.grid(row=7, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
         self.plan_step2_entry = ctk.CTkEntry(s2_row, placeholder_text="C:\\Users\\...\\Discord.exe")
@@ -635,8 +721,8 @@ class AssistantApp(ctk.CTk):
 
         info_lbl = ctk.CTkLabel(
             self.tab_ds,
-            text="🔒 ЗАЩИТА ОТ СВОРАЧИВАНИЯ: Если в '⚡ Команды' запущена игра с флагом [🎮 Игра],\n"
-                 "сообщение НЕ отправится, а ассистент тихо предупредит звуком, чтобы не сбивать фокус.",
+            text="🔒 ЗАЩИТА ОТ СВОРАЧИВАНИЯ: Если запущена игра с флагом [🎮 Игра],\n"
+                 "сообщение НЕ отправится, а ассистент тихо предупредит звуком.",
             text_color="#BA68C8", font=ctk.CTkFont(size=12, weight="bold")
         )
         info_lbl.pack(pady=(0, 5))
@@ -644,7 +730,59 @@ class AssistantApp(ctk.CTk):
         self.ds_scroll = ctk.CTkScrollableFrame(self.tab_ds, height=220)
         self.ds_scroll.pack(fill="both", expand=True, padx=10, pady=5)
 
-    # --- ВКЛАДКА 4: НАСТРОЙКИ ---
+    # --- ВКЛАДКА 4: МУЗЫКА И МЕДИА ---
+    def _build_music_tab(self):
+        m_frame = ctk.CTkFrame(self.tab_music, fg_color="#1E1E24")
+        m_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(m_frame, text="Быстрый тест медиа-клавиш:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
+
+        btn_row = ctk.CTkFrame(m_frame, fg_color="transparent")
+        btn_row.pack(pady=(0, 10))
+
+        ctk.CTkButton(btn_row, text="⏮ Назад", width=90, command=lambda: press_media_key(VK_MEDIA_PREV_TRACK)).pack(
+            side="left", padx=5)
+        ctk.CTkButton(btn_row, text="⏯ Пауза / Плей", width=120, fg_color="#6A1B9A", hover_color="#4A148C",
+                      command=lambda: press_media_key(VK_MEDIA_PLAY_PAUSE)).pack(side="left", padx=5)
+        ctk.CTkButton(btn_row, text="⏭ Вперед", width=90, command=lambda: press_media_key(VK_MEDIA_NEXT_TRACK)).pack(
+            side="left", padx=5)
+        ctk.CTkButton(btn_row, text="🔉 -", width=50, command=lambda: press_media_key(VK_VOLUME_DOWN, 4)).pack(
+            side="left", padx=5)
+        ctk.CTkButton(btn_row, text="🔊 +", width=50, command=lambda: press_media_key(VK_VOLUME_UP, 4)).pack(side="left",
+                                                                                                            padx=5)
+
+        info_box = ctk.CTkTextbox(self.tab_music, height=350)
+        info_box.pack(fill="both", expand=True, padx=10, pady=5)
+        info_box.insert("end",
+                        "УПРАВЛЕНИЕ МУЗЫКОЙ (Работает в фоне, не сворачивая игры):\n\n"
+                        "1. ПАУЗА / СТОП:\n"
+                        "   • «Вась, музыка стоп»\n"
+                        "   • «Вась, музыка пауза»\n"
+                        "   • «Вась, останови музыку»\n"
+                        "   • «Вась, пауза»\n\n"
+                        "2. ВКЛЮЧИТЬ / ПРОДОЛЖИТЬ:\n"
+                        "   • «Вась, музыка включить»\n"
+                        "   • «Вась, включи музыку»\n"
+                        "   • «Вась, музыка играть»\n"
+                        "   • «Вась, продолжи музыку»\n\n"
+                        "3. СЛЕДУЮЩИЙ ТРЕК:\n"
+                        "   • «Вась, музыка следующее»\n"
+                        "   • «Вась, следующий трек»\n"
+                        "   • «Вась, переключи трек»\n"
+                        "   • «Вась, трек дальше»\n\n"
+                        "4. ПРЕДЫДУЩИЙ ТРЕК:\n"
+                        "   • «Вась, музыка предыдущее»\n"
+                        "   • «Вась, предыдущий трек»\n"
+                        "   • «Вась, трек назад»\n"
+                        "   • «Вась, верни трек»\n\n"
+                        "5. ГРОМКОСТЬ:\n"
+                        "   • «Вась, музыка громче» / «звук громче»\n"
+                        "   • «Вась, музыка тише» / «звук тише»\n"
+                        "   • «Вась, выключи звук» / «звук мут»\n"
+                        )
+        info_box.configure(state="disabled")
+
+    # --- ВКЛАДКА 5: НАСТРОЙКИ ---
     def _build_settings_tab(self):
         sett_frame = ctk.CTkFrame(self.tab_settings, fg_color="#1E1E24")
         sett_frame.pack(fill="x", padx=10, pady=15)
@@ -670,17 +808,6 @@ class AssistantApp(ctk.CTk):
         self.meter = ctk.CTkProgressBar(sett_frame, width=150, progress_color="#6A1B9A")
         self.meter.set(0.0)
         self.meter.grid(row=0, column=3, sticky="w", padx=(0, 10), pady=12)
-
-        help_box = ctk.CTkTextbox(self.tab_settings, height=220)
-        help_box.pack(fill="both", expand=True, padx=10, pady=10)
-        help_box.insert("end",
-                        "СПРАВКА:\n"
-                        "• Права администратора: Если запускать Васю от админа, любые дочерние батники (Запрет)\n"
-                        "  запускаются с правами админа автоматически без окон UAC.\n"
-                        "• Метка игры: Позволяет указать имя процесса (например, cs2.exe).\n"
-                        "  Пока этот процесс запущен, ассистент блокирует сворачивание окон для сообщений Discord.\n"
-                        )
-        help_box.configure(state="disabled")
 
     # --- ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ---
     def update_meter(self, level: float):
@@ -713,7 +840,7 @@ class AssistantApp(ctk.CTk):
 
     def _browse_into(self, entry_widget):
         f = filedialog.askopenfilename(
-            title="Выберите программу или файл",
+            title="Выберите файл",
             filetypes=[("Все исполняемые", "*.exe *.bat *.cmd"), ("Все файлы", "*.*")]
         )
         if f:
@@ -728,11 +855,10 @@ class AssistantApp(ctk.CTk):
         proc_name = self.cmd_proc_entry.get().strip().lower()
 
         if not raw_aliases or not target:
-            messagebox.showwarning("Внимание", "Заполните фразы и цель.")
+            messagebox.showwarning("Внимание", "Заполните фразы и путь к файлу.")
             return
 
         aliases = [a.strip().lower() for a in raw_aliases.split(",") if a.strip()]
-
         self.config["commands"].append({
             "aliases": aliases,
             "target": target,
@@ -828,7 +954,7 @@ class AssistantApp(ctk.CTk):
             tb.pack(side="left", fill="both", expand=True, padx=10, pady=5)
             ctk.CTkLabel(tb, text=f"Обращение: {', '.join(item['aliases'])}", font=ctk.CTkFont(weight="bold"),
                          anchor="w").pack(fill="x")
-            ctk.CTkLabel(tb, text=f"Discord  Ник: {item['discord_tag']}", text_color="#64B5F6", anchor="w").pack(
+            ctk.CTkLabel(tb, text=f"Discord Ник: {item['discord_tag']}", text_color="#64B5F6", anchor="w").pack(
                 fill="x")
             ctk.CTkButton(card, text="Удалить", width=70, fg_color="#B71C1C", hover_color="#7F0000",
                           command=lambda i=idx: self._delete_item("contacts", i)).pack(side="right", padx=10, pady=5)
