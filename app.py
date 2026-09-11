@@ -828,7 +828,7 @@ class AssistantApp(ctk.CTk):
             tb.pack(side="left", fill="both", expand=True, padx=10, pady=5)
             ctk.CTkLabel(tb, text=f"Обращение: {', '.join(item['aliases'])}", font=ctk.CTkFont(weight="bold"),
                          anchor="w").pack(fill="x")
-            ctk.CTkLabel(tb, text=f"Discord Ник: {item['discord_tag']}", text_color="#64B5F6", anchor="w").pack(
+            ctk.CTkLabel(tb, text=f"Discord  Ник: {item['discord_tag']}", text_color="#64B5F6", anchor="w").pack(
                 fill="x")
             ctk.CTkButton(card, text="Удалить", width=70, fg_color="#B71C1C", hover_color="#7F0000",
                           command=lambda i=idx: self._delete_item("contacts", i)).pack(side="right", padx=10, pady=5)
